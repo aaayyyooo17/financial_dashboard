@@ -21,6 +21,16 @@ app.layout = html.Div([
         ),
 
         dcc.Dropdown(
+            id="search",
+            options=[],
+            searchable=True,
+            clearable=True,
+            placeholder="Search company name...",
+            style={"width": "360px", "fontSize": "16px"}
+        ),
+
+
+        dcc.Dropdown(
             id = "period",
             options = [
                 {"label": "1 Month",  "value": "1mo"},
@@ -36,12 +46,57 @@ app.layout = html.Div([
 
 
 
-    ], style = {"display": "flex", "flexdirection": "row", "gap": "20px", "marginBottom": "20px", "backgroundColor": "#fafafa", "padding": "10px", "borderRadius": "10px"}),
+    ], style = {"display": "flex", "flexDirection": "row", "gap": "20px", "marginBottom": "20px", "backgroundColor": "#fafafa", "padding": "10px", "borderRadius": "10px"}),
 
-    html.Div(id = "kpi_cards", style = {"display": "flex", "flexDirection": "row", "gap": "20px", "marginBottom": "20px", "width": "25%"}),
+    html.Div(id = "kpi_cards", style = {"display": "flex", "flexDirection": "row", "flexWrap": "wrap", "gap": "20px", "marginBottom": "20px"}),
     dcc.Graph(id="price_chart", style = {"marginBottom": "20px", "border": "1px solid #ddd", "borderRadius": "10px", "backgroundColor": "#fafafa"}),
     dcc.Graph(id="volume_chart", style = {"marginBottom": "20px", "border": "1px solid #ddd", "borderRadius": "10px", "backgroundColor": "#fafafa"}),
 ])
+
+
+
+def fmt(value, kind="number"):
+    if value is None:
+        return "n/a"
+    if kind == "percent":
+        return f"{value:.1%}"      # 0.2134 -> 21.3%
+    return f"{value:,.2f}"
+
+
+
+@app.callback(
+    Output("search", "options"),
+    Input("search", "search_value"),
+    State("search", "value"),
+    State("search", "options"),
+)
+def update_search_hints(query, selected, current_options):
+    # Keep the current options (including the selected one) when the box is empty
+    if query is None or len(query.strip()) < 2:
+        return no_update
+
+    options = search_ticker(query.strip())
+    # Yahoo matches fuzzily (e.g. "google" -> Alphabet), so make every hint
+    # match the typed text, otherwise the dropdown's own filter hides it
+    for option in options:
+        option["search"] = f"{query} {option['label']}"
+
+    # Keep the selected option so its label doesn't disappear
+    if selected and all(o["value"] != selected for o in options):
+        options += [o for o in (current_options or []) if o["value"] == selected]
+    return options
+
+
+@app.callback(
+    Output("ticker", "value"),
+    Input("search", "value"),
+    prevent_initial_call=True
+)
+def select_result(symbol):
+    if symbol is None:
+        return no_update
+    return symbol
+
 
 @app.callback(
     Output("kpi_cards", "children"),
@@ -50,24 +105,42 @@ app.layout = html.Div([
     Input("ticker", "value"),
     Input("period", "value")
 )
-
 def update_dashboard(ticker, period):
-    df = get_stock_data(ticker, period)
+    empty_fig = go.Figure() 
+
+    if ticker is None or ticker.strip() == "":
+        return [html.P("Enter a ticker.")], empty_fig, empty_fig
+
+    ticker = ticker.strip().upper()
+
+    try:
+        df = get_stock_data(ticker, period)
+    except ValueError as error:
+        message = html.P(str(error), style={"color": "red"})
+        return [message], empty_fig, empty_fig
+
     info = get_stock_info(ticker)
 
+    metrics = compute_metrics(df)
+
+    
+
     kpi_items = [
-        ("Current Price", info['price']),
-        ("P/E Ratio", info['pe_ratio']),
-        ("52W High", info['52w_high']),
-        ("52W Low", info['52w_low']),
+        ("Current Price",   info["price"],              "number"),
+        ("P/E Ratio",       info["pe_ratio"],           "number"),
+        ("52W High",        info["52w_high"],           "number"),
+        ("52W Low",         info["52w_low"],            "number"),
+        ("Ann. Return",     metrics["ann_return"],      "percent"),
+        ("Ann. Volatility", metrics["ann_volatility"],  "percent"),
+        ("Max Drawdown",    metrics["max_drawdown"],    "percent"),
     ]
 
     cards = []
 
-    for label, value in kpi_items:
+    for label, value, kind in kpi_items:
         card = html.Div([
             html.P(label, style={"margin": 0, "color": "#888", "fontSize": "12px"}),
-            html.H3(str(value), style={"margin": "4px"}),
+            html.H3(fmt(value, kind), style={"margin": "4px"}),
         ], style={
             "padding": "16px 20px",
             "border": "1px solid #ddd",
@@ -92,7 +165,7 @@ def update_dashboard(ticker, period):
     price_fig.update_layout(
         title=f"{info['name']} — Price ({period})",
         xaxis_title="Date",
-        yaxis_title="Price (USD)",
+        yaxis_title=f"Price ({info['currency']})",
         xaxis_rangeslider_visible=False,
         plot_bgcolor="white",
         paper_bgcolor="white",
